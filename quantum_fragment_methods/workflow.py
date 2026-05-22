@@ -10,9 +10,17 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-# quantum_fragment_methods/workflow.py
+from collections import defaultdict
 
-from .application.embedding.base import EmbeddingResult
+from .application.embedding.base import EmbeddingResult, BaseEmbedder
+try:
+    from pycompss.api.api import compss_wait_on
+except ImportError:
+    print('COMPSs not loaded: sequential execution on')
+    def compss_wait_on(x): return x
+except:
+    print('Unknown error importing COMPSs')
+    exit(1)
 
 
 class SolverRule:
@@ -43,8 +51,9 @@ class QFWorkflow:
     """Orchestrator for quantum fragment calculations (EWF, DMET, MBE)."""
 
     def __init__(
-        self, geometry, basis, embedder=None, save_path="results/", fragmentation="atomic", **kwargs
-    ):
+        self, geometry, basis, embedder : BaseEmbedder | None=None, fragmentation="atomic",
+        use_ranks=False, **kwargs
+        ):
         """
         Initialize quantum fragment workflow.
 
@@ -57,8 +66,6 @@ class QFWorkflow:
         embedder : BaseEmbedder, optional
             Embedding method instance (EWF, DMET, or MBE). If None, workflow
             can only run mean-field calculations (no fragmentation).
-        save_path : str, optional
-            Directory for saving results (default: 'results/')
         fragmentation : str, optional
             Fragmentation scheme for EWF: 'atomic' or 'iao' (default: 'atomic')
         **kwargs : dict
@@ -77,14 +84,14 @@ class QFWorkflow:
         """
         self.geometry = geometry
         self.basis = basis
-        self.embedder = embedder
-        self.save_path = save_path
+        self.embedder = embedder # type: ignore
         self.fragmentation = fragmentation
         self.embedding_options = kwargs  # Store additional options for embedder
         self.solver_rules = []
         self.default_solver = None
         self.mf = None
         self.embedding_result = None
+        self.use_ranks = use_ranks
 
     def add_solver_rule(self, solver_factory, condition=None, priority=0):
         """
@@ -164,18 +171,18 @@ class QFWorkflow:
         mol.atom = atom_data
         mol.unit = "Angstrom"
         mol.basis = self.basis
-        mol.verbose = 4
+        mol.verbose = 0
         mol.build()
 
         # Run Hartree-Fock with density fitting
         mf = RHF(mol).density_fit()
-        mf.kernel()
+        mf.kernel() # type: ignore
 
         # Store mean-field object
         self.mf = mf
         self.mol = mol
 
-        print(f"Mean-Field (Hartree-Fock) energy = {mf.e_tot} Ha")
+        print(f"Mean-Field (Hartree-Fock) energy = {mf.e_tot} Ha") # type: ignore
 
         return mf
 
@@ -192,6 +199,7 @@ class QFWorkflow:
             raise RuntimeError("Must run mean-field calculation first")
 
         # Pass fragmentation scheme and any additional options to embedder
+        self.embedder : BaseEmbedder
         self.embedding_result = self.embedder.create_fragments(
             self.mf, fragmentation=self.fragmentation, **self.embedding_options
         )
@@ -243,12 +251,19 @@ class QFWorkflow:
         solvers = self._assign_solvers()
 
         # Solve each fragment
-        fragment_results = {}
-
-        for fragment_id, fragment in self.embedding_result.fragments.items():
+        fragment_results, results_metadata = {}, defaultdict(dict)
+        
+        # sort fragments for COMPSs scheduler
+        if self.use_ranks:
+            sorted_fragments = sorted(self.embedding_result.fragments.items(), key=lambda x:x[1].n_orbitals, reverse=True)
+        else:
+            sorted_fragments = self.embedding_result.fragments.items()
+    
+        for rank, (fragment_id, fragment) in enumerate(sorted_fragments):
             solver = solvers[fragment_id]
-
-            print(f"Solving fragment {fragment_id} with {solver.name}...")
+            frag_name = fragment.metadata["vayesta_fragment"].name
+            results_metadata[fragment_id]["name"] = frag_name
+            print(f"[rank {rank}] Solving fragment {frag_name} (id={fragment_id}) with {fragment.n_orbitals} orbitals")
 
             # Get fragment data from metadata
             if "hamiltonian" in fragment.metadata:
@@ -265,7 +280,7 @@ class QFWorkflow:
 
                 # Solve using integrals
                 if hasattr(solver, "solve_from_integrals"):
-                    result = solver.solve_from_integrals(h1e, h2e, norb, nocc)
+                    result = solver.solve_from_integrals(rank, h1e, h2e, norb, nocc)
                 else:
                     raise NotImplementedError(
                         f"Solver {solver.name} does not support solve_from_integrals(). "
@@ -324,9 +339,7 @@ class QFWorkflow:
 
                     # Solve using integrals - always compute RDMs for energy reconstruction
                     if hasattr(solver, "solve_from_integrals"):
-                        result = solver.solve_from_integrals(
-                            h1e, h2e, norb, nocc, compute_rdms=True
-                        )
+                        result = solver.solve_from_integrals(rank, h1e, h2e, norb, nocc)
 
                         # Store additional data needed for partitioned cumulant energy
                         # Load c_frag and c_cluster from HDF5 for fragment projector
@@ -342,11 +355,11 @@ class QFWorkflow:
 
                                 # Store in result metadata for energy reconstruction
                                 if c_frag is not None:
-                                    result.metadata["c_frag"] = c_frag
+                                    results_metadata[fragment_id]["c_frag"] = c_frag
                                 if c_cluster is not None:
-                                    result.metadata["c_cluster"] = c_cluster
-                                result.metadata["norb"] = norb
-                                result.metadata["nocc"] = nocc
+                                    results_metadata[fragment_id]["c_cluster"] = c_cluster
+                                results_metadata[fragment_id]["norb"] = norb
+                                results_metadata[fragment_id]["nocc"] = nocc
                         except Exception as e:
                             print(
                                 f"Warning: Could not load c_frag/c_cluster for fragment {fragment_id}: {e}"
@@ -389,7 +402,7 @@ class QFWorkflow:
 
                     # Solve using integrals
                     if hasattr(solver, "solve_from_integrals"):
-                        result = solver.solve_from_integrals(h1e, h2e, norb, nocc)
+                        result = solver.solve_from_integrals(rank, h1e, h2e, norb, nocc)
                     else:
                         raise NotImplementedError(
                             f"Solver {solver.name} does not support solve_from_integrals(). "
@@ -407,14 +420,14 @@ class QFWorkflow:
                 )
 
             fragment_results[fragment_id] = result
-            # For EWF, print correlation energy (not total cluster energy which overlaps)
-            if hasattr(result, "metadata") and "e_corr" in result.metadata:
-                e_corr = result.metadata["e_corr"]
-                print(f"  Fragment {fragment_id} correlation energy: {e_corr:.8f} Ha")
-            else:
-                print(f"  Fragment {fragment_id} energy: {result.energy:.8f} Ha")
+
+        # COMPSs synchronization
+        fragment_results = compss_wait_on(fragment_results)
+        for fragment_id, metadata_dict in results_metadata.items():
+            fragment_results[fragment_id].metadata.update(metadata_dict)
 
         return fragment_results
+
 
     def reconstruct_energy(self, fragment_results):
         """
