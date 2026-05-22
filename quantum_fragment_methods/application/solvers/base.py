@@ -105,4 +105,3 @@ class BaseSolver(ABC):
     def name(self) -> str:
         """Return solver name."""
         return self.__class__.__name__
-
