@@ -20,12 +20,21 @@ from .application.solvers.base import BaseSolver
 from .application.embedding.base import EmbeddingResult, BaseEmbedder
 try:
     from pycompss.api.api import compss_wait_on
+    from pycompss.api.task import task # type: ignore
 except ImportError:
     print('COMPSs not loaded: sequential execution on')
     def compss_wait_on(*args): return args
+    def task(**kwargs):
+        def decorator(func): return func
+        return decorator
 except:
     print('Unknown error importing COMPSs')
     exit(1)
+
+
+@task(returns=1)
+def fake_task():
+    return None
 
 
 class SolverRule:
@@ -268,7 +277,9 @@ class QFWorkflow:
             sorted_fragments = sorted(self.embedding_result.fragments.items(), key=lambda x:x[1].n_orbitals, reverse=True)
         else:
             sorted_fragments = self.embedding_result.fragments.items()
-    
+
+        # fake task for scheduling purposes
+        fake_res = fake_task()
         for rank, (fragment_id, fragment) in enumerate(sorted_fragments):
 
             # Extract Hamiltonian from Vayesta fragment
@@ -318,7 +329,7 @@ class QFWorkflow:
                     ) from e
 
                 # Solve using integrals - always compute RDMs for energy reconstruction
-                result, qpu_time, diag_time = solver.solve(rank, h1e, h2e, norb, nocc) # type: ignore
+                result, qpu_time, diag_time = solver.solve(rank, h1e, h2e, norb, nocc, fake_res=fake_res) # type: ignore
 
                 # Store additional data needed for partitioned cumulant energy
                 # Load c_frag and c_cluster from HDF5 for fragment projector
@@ -375,7 +386,7 @@ class QFWorkflow:
                 nocc = nelec // 2
 
                 # Solve using integrals
-                result, qpu_time, diag_time = solver.solve(rank, h1e, h2e, norb, nocc) # type: ignore
+                result, qpu_time, diag_time = solver.solve(rank, h1e, h2e, norb, nocc, fake_res=fake_res) # type: ignore
             else:
                 raise RuntimeError(
                     f"Fragment {fragment_id} has Vayesta fragment but no cluster data. "
