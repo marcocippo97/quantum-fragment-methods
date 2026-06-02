@@ -66,7 +66,7 @@ class QFWorkflow:
 
     def __init__(
         self, geometry, basis, embedder : BaseEmbedder | None=None, fragmentation="atomic",
-        use_ranks=False, **kwargs
+        use_ranks=False, use_threshold=False, n_orbs_threshold=14, **kwargs
         ):
         """
         Initialize quantum fragment workflow.
@@ -110,6 +110,8 @@ class QFWorkflow:
         self.mf = None
         self.embedding_result = None
         self.use_ranks = use_ranks
+        self.use_threshold = use_threshold
+        self.n_orbs_threshold = n_orbs_threshold
 
 
     def add_solver_rule(self, solver_factory, condition=None, priority=0):
@@ -278,9 +280,15 @@ class QFWorkflow:
         else:
             sorted_fragments = self.embedding_result.fragments.items()
 
+        ranks = list(range(len(sorted_fragments)))
+        if self.use_threshold:
+            for i, frag in enumerate(sorted_fragments):
+                if frag[1].n_orbitals >= self.n_orbs_threshold:
+                    ranks[i] = 0
+
         # fake task for scheduling purposes
         fake_res = fake_task()
-        for rank, (fragment_id, fragment) in enumerate(sorted_fragments):
+        for rank, (fragment_id, fragment) in zip(ranks, sorted_fragments):
 
             # Extract Hamiltonian from Vayesta fragment
             vfrag = fragment.metadata["vayesta_fragment"]
