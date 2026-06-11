@@ -287,7 +287,7 @@ class QFWorkflow:
                     ranks[i] = 0
 
         # fake task for scheduling purposes
-        fake_res = fake_task()
+        fake_res = None #fake_task()
         for rank, (fragment_id, fragment) in zip(ranks, sorted_fragments):
 
             # Extract Hamiltonian from Vayesta fragment
@@ -430,10 +430,11 @@ class QFWorkflow:
 
         return self.embedder.reconstruct_energy(fragment_results, self.embedding_result)
 
-    def run(self):
+    def run(self, create_fragments=True):
         """Execute full workflow."""
-        self.run_mean_field()
-        self.create_fragments()
+        if create_fragments:
+            self.run_mean_field()
+            self.create_fragments()
         fragment_results = self.solve_fragments()
         total_energy = self.reconstruct_energy(fragment_results)
         return WorkflowResult(
