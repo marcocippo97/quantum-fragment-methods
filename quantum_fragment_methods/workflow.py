@@ -405,12 +405,7 @@ class QFWorkflow:
         # COMPSs synchronization
         fragment_results, results_metadata = compss_wait_on(fragment_results, results_metadata)
         for fragment_id, metadata_dict in results_metadata.items():
-            meta = metadata_dict.copy()
-            qpu_dict = meta["execution_time"]["qpu_time"]
-            diag_dict = meta["execution_time"]["diag_time"]
-            qpu_dict["duration"] = qpu_dict["end"] - qpu_dict["start"]
-            diag_dict["duration"] = diag_dict["end"] - diag_dict["start"]
-            fragment_results[fragment_id].metadata.update(meta)
+            fragment_results[fragment_id].metadata.update(metadata_dict)
 
         return fragment_results
 
